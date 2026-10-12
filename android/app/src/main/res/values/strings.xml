@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CleanSwipe</string>
+    <string name="title_activity_main">CleanSwipe</string>
+    <string name="package_name">com.asilbalaban.photoswipecleaner</string>
+    <string name="custom_url_scheme">com.asilbalaban.photoswipecleaner</string>
+</resources>

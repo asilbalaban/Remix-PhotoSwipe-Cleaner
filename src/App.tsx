@@ -1,28 +1,29 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { User } from 'firebase/auth';
 import confetti from 'canvas-confetti';
-import { PhotoItem, SwipeDirection, CleanerStats, FilterState, ViewMode } from './types';
 import {
-  initAuth,
-  googleSignIn,
-  logout,
-  getAccessToken,
-  setCachedAccessToken,
-} from './services/auth';
+  PhotoItem,
+  SwipeDirection,
+  CleanerStats,
+  FilterState,
+  AppTab,
+  SortOrder,
+  DEFAULT_FILTERS,
+  LARGE_FILE_BYTES,
+} from './types';
+import { formatBytes } from './services/photoUtils';
 import {
-  fetchDrivePhotos,
-  fetchPhotosLibrary,
-  moveFileToDriveTrash,
-  deleteDriveFilePermanent,
-  safeDeleteOrTrashPhoto,
-  getDemoPhotos,
-  formatBytes,
-  getAuthenticatedBlobUrl,
-} from './services/googlePhotosService';
+  fetchDevicePhotos,
+  deleteDevicePhotos,
+  hasGalleryPermission,
+  isDevicePhoto,
+  isDeviceGalleryAvailable,
+  photosFromFiles,
+} from './services/localGallery';
 import { AndroidFrame } from './components/AndroidFrame';
-import { Header } from './components/Header';
-import { FilterBar } from './components/FilterBar';
-import { StorageStatsCard } from './components/StorageStatsCard';
+import { TopBar } from './components/TopBar';
+import { BottomNav } from './components/BottomNav';
+import { WelcomeView } from './components/WelcomeView';
+import { ProfileView } from './components/ProfileView';
 import { SwipeCard } from './components/SwipeCard';
 import { ActionControls } from './components/ActionControls';
 import { ReviewTrashModal } from './components/ReviewTrashModal';
@@ -30,34 +31,71 @@ import { PhotoPreviewModal } from './components/PhotoPreviewModal';
 import { BatchCompleteView } from './components/BatchCompleteView';
 import { FilterDrawer } from './components/FilterDrawer';
 import { BatchGalleryView } from './components/BatchGalleryView';
-import { AppInfoModal } from './components/AppInfoModal';
-import { Sparkles, ShieldCheck } from 'lucide-react';
+
+// Stable pseudo-random rank per photo, so the "random" order does not reshuffle on every render
+const randomRank = (id: string): number => {
+  let hash = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    hash = Math.imul(hash ^ id.charCodeAt(i), 16777619);
+  }
+  return hash >>> 0;
+};
+
+const PHOTO_COMPARATORS: Record<SortOrder, (a: PhotoItem, b: PhotoItem) => number> = {
+  newest: (a, b) => b.createdAt.localeCompare(a.createdAt),
+  oldest: (a, b) => a.createdAt.localeCompare(b.createdAt),
+  largest: (a, b) => b.sizeBytes - a.sizeBytes,
+  smallest: (a, b) => a.sizeBytes - b.sizeBytes,
+  name: (a, b) => a.name.localeCompare(b.name, 'tr', { numeric: true }),
+  random: (a, b) => randomRank(a.id) - randomRank(b.id),
+};
+
+const EMPTY_STATS: CleanerStats = {
+  totalReviewed: 0,
+  keptCount: 0,
+  deletedCount: 0,
+  favoritedCount: 0,
+  freedBytes: 0,
+};
+
+const useFilePicker = !isDeviceGalleryAvailable();
+
+// Photos kept in earlier sessions are remembered so they are not suggested again
+const REVIEWED_STORAGE_KEY = 'cleanswipe.reviewedIds';
+
+const loadReviewedIds = (): Set<string> => {
+  try {
+    return new Set<string>(JSON.parse(localStorage.getItem(REVIEWED_STORAGE_KEY) || '[]'));
+  } catch {
+    return new Set<string>();
+  }
+};
+
+const saveReviewedIds = (ids: Set<string>) => {
+  try {
+    localStorage.setItem(REVIEWED_STORAGE_KEY, JSON.stringify(Array.from(ids)));
+  } catch {
+    // storage full or unavailable: the photos are simply suggested again next time
+  }
+};
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [cachedToken, setCachedToken] = useState<string | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [allPhotos, setAllPhotos] = useState<PhotoItem[]>(() => getDemoPhotos());
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isDemoMode, setIsDemoMode] = useState(true);
+  const [allPhotos, setAllPhotos] = useState<PhotoItem[]>([]);
+  // False until the gallery (or picked files) has been loaded; the welcome screen shows meanwhile
+  const [hasGallery, setHasGallery] = useState(false);
+  // True while checking at startup whether the gallery permission was already granted
+  const [isStarting, setIsStarting] = useState(!useFilePicker);
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [isSimulatedFrame, setIsSimulatedFrame] = useState(true);
 
-  // View Mode: 'swipe' (one-by-one card) or 'grid' (toplu seç ve sil)
-  const [viewMode, setViewMode] = useState<ViewMode>('swipe');
+  const [activeTab, setActiveTab] = useState<AppTab>('swipe');
 
-  // Filter Drawer State (Year, Month, Album, Person)
+  // Sort & Filter Drawer State (Order, Type, Year, Month, Album)
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
-  const [filters, setFilters] = useState<FilterState>({
-    selectedYear: 'all',
-    selectedMonth: 'all',
-    selectedAlbum: 'all',
-    category: 'all',
-  });
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
 
   // Batch Multi-Select state
   const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
-  const [isAppInfoOpen, setIsAppInfoOpen] = useState(false);
 
   // Swipe Action History for Undo
   const [swipeHistory, setSwipeHistory] = useState<{ photo: PhotoItem; direction: SwipeDirection }[]>([]);
@@ -74,13 +112,25 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Statistics
-  const [stats, setStats] = useState<CleanerStats>({
-    totalReviewed: 0,
-    keptCount: 0,
-    deletedCount: 0,
-    favoritedCount: 0,
-    freedBytes: 0,
-  });
+  const [stats, setStats] = useState<CleanerStats>(EMPTY_STATS);
+
+  // Photos the user kept or favorited. They leave the list at once and stay out across restarts.
+  const [reviewedIds, setReviewedIds] = useState<Set<string>>(loadReviewedIds);
+
+  const updateReviewedIds = useCallback((change: (ids: Set<string>) => void) => {
+    setReviewedIds((prev) => {
+      const next = new Set(prev);
+      change(next);
+      saveReviewedIds(next);
+      return next;
+    });
+  }, []);
+
+  const handleResetReviewed = () => {
+    updateReviewedIds((ids) => ids.clear());
+    setSwipeHistory([]);
+    showToast('İnceleme geçmişi sıfırlandı, tüm fotoğraflar yeniden gösterilecek.');
+  };
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -89,94 +139,53 @@ export default function App() {
     }, 3200);
   }, []);
 
-  // Initialize auth listener
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (authedUser, token) => {
-        setUser(authedUser);
-        setCachedAccessToken(token);
-        setCachedToken(token);
-        loadUserPhotos(token);
-      },
-      () => {
-        setUser(null);
-        setCachedAccessToken(null);
-        setCachedToken(null);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  // Fetch photos from Google Drive & Photos
-  const loadUserPhotos = async (tokenOverride?: string) => {
-    const token = tokenOverride || cachedToken || (await getAccessToken());
-    if (!token) {
-      showToast('Lütfen önce Google hesabınızla giriş yapın.');
-      return;
-    }
-
-    setCachedToken(token);
+  // Fetch photos from the device gallery (asks for the permission when needed)
+  const loadDeviceGallery = useCallback(async () => {
     setIsLoadingPhotos(true);
     try {
-      const drivePhotos = await fetchDrivePhotos(token);
-      let photosLibPhotos: PhotoItem[] = [];
-
-      try {
-        photosLibPhotos = await fetchPhotosLibrary(token);
-      } catch (e) {
-        console.warn('Google Photos Library API opsiyonel kontrolü geçildi:', e);
+      const { photos, total } = await fetchDevicePhotos();
+      if (photos.length === 0) {
+        showToast('Galeride fotoğraf bulunamadı.');
+        return;
       }
 
-      const combined = [...drivePhotos, ...photosLibPhotos];
-
-      if (combined.length > 0) {
-        setAllPhotos(combined);
-        setCurrentIndex(0);
-        setSwipeHistory([]);
-        setTrashQueue([]);
-        setBatchSelectedIds([]);
-        setIsDemoMode(false);
-        showToast(`${combined.length} fotoğraf Google hesabınızdan yüklendi!`);
-      } else {
-        showToast('Google hesabınızda görsel bulunamadı, örnek galeri yüklendi.');
-        setAllPhotos(getDemoPhotos());
-        setIsDemoMode(true);
-      }
+      setAllPhotos(photos);
+      setSwipeHistory([]);
+      setTrashQueue([]);
+      setBatchSelectedIds([]);
+      setHasGallery(true);
+      showToast(
+        total > photos.length
+          ? `Galerideki ${total} fotoğraftan en yeni ${photos.length} tanesi yüklendi.`
+          : `${photos.length} fotoğraf yüklendi.`
+      );
     } catch (err: any) {
-      console.error('Fotoğraf yükleme hatası:', err);
-      showToast(`Hata: ${err.message || 'Fotoğraflar yüklenemedi'}`);
+      console.error('Cihaz galerisi yükleme hatası:', err);
+      showToast(
+        err?.code === 'PERMISSION_DENIED'
+          ? 'Galeri izni verilmedi. Devam etmek için fotoğraflara erişim izni gerekiyor.'
+          : `Hata: ${err?.message || 'Galeri okunamadı'}`
+      );
     } finally {
       setIsLoadingPhotos(false);
     }
-  };
+  }, [showToast]);
 
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    try {
-      const result = await googleSignIn();
-      if (result) {
-        setUser(result.user);
-        setCachedToken(result.accessToken);
-        await loadUserPhotos(result.accessToken);
-      }
-    } catch (err: any) {
-      showToast(`Giriş başarısız: ${err.message || 'Bilinmeyen hata'}`);
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
+  // Open straight into the gallery when the permission was granted on an earlier run
+  useEffect(() => {
+    if (useFilePicker) return;
+    hasGalleryPermission()
+      .then((granted) => (granted ? loadDeviceGallery() : undefined))
+      .catch((err) => console.error('Galeri izni kontrol edilemedi:', err))
+      .finally(() => setIsStarting(false));
+  }, [loadDeviceGallery]);
 
-  const handleLogout = async () => {
-    await logout();
-    setUser(null);
-    setCachedToken(null);
-    setAllPhotos(getDemoPhotos());
-    setIsDemoMode(true);
-    setCurrentIndex(0);
-    setSwipeHistory([]);
-    setTrashQueue([]);
-    setBatchSelectedIds([]);
-    showToast('Google oturumunuz kapatıldı. Örnek moda geçildi.');
+  // Browser: photos picked with the file input
+  const handleLocalFilesPicked = (files: FileList) => {
+    const newItems = photosFromFiles(files);
+    setAllPhotos((prev) => [...newItems, ...prev]);
+    setHasGallery(true);
+    showToast(`${newItems.length} fotoğraf eklendi.`);
   };
 
   // Available Years from photo collection
@@ -194,84 +203,63 @@ export default function App() {
     allPhotos.forEach((p) => {
       if (p.albumName) set.add(p.albumName);
     });
-    return Array.from(set).sort();
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'tr'));
   }, [allPhotos]);
 
-  // Filtered photos based on Year, Month, Album, and Person category
+  const trashQueueIds = useMemo(() => new Set(trashQueue.map((p) => p.id)), [trashQueue]);
+
+  // Photos still waiting for a decision: not kept, not queued for deletion, matching the
+  // Type, Year, Month and Album filters, in the chosen sort order. The first one is the front card.
   const filteredPhotos = useMemo(() => {
-    return allPhotos.filter((p) => {
+    const matching = allPhotos.filter((p) => {
+      if (reviewedIds.has(p.id) || trashQueueIds.has(p.id)) return false;
       if (filters.selectedYear !== 'all' && p.year !== filters.selectedYear) return false;
       if (filters.selectedMonth !== 'all' && p.month !== filters.selectedMonth) return false;
       if (filters.selectedAlbum !== 'all' && p.albumName !== filters.selectedAlbum) return false;
-      if (filters.category === 'people' && !p.hasPerson) return false;
-      if (filters.category === 'non-people' && p.hasPerson) return false;
       if (filters.category === 'screenshots' && p.category !== 'screenshots') return false;
-      if (filters.category === 'large' && p.sizeBytes < 4 * 1024 * 1024) return false;
+      if (filters.category === 'large' && p.sizeBytes < LARGE_FILE_BYTES) return false;
       return true;
     });
-  }, [allPhotos, filters]);
+    return matching.sort(PHOTO_COMPARATORS[filters.sortBy]);
+  }, [allPhotos, filters, reviewedIds, trashQueueIds]);
 
-  // Summary badge for active filter
-  const activeFilterSummary = useMemo(() => {
-    const parts: string[] = [];
-    if (filters.selectedYear !== 'all') parts.push(`${filters.selectedYear}`);
-    if (filters.selectedMonth !== 'all') {
-      const monthNames = [
-        'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
-        'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık',
-      ];
-      parts.push(monthNames[filters.selectedMonth - 1] || '');
-    }
-    if (filters.selectedAlbum !== 'all') parts.push(filters.selectedAlbum);
-    if (filters.category === 'people') parts.push('👤 İnsanlar');
-    if (filters.category === 'non-people') parts.push('🏞️ İnsan Olmayanlar');
-    return parts.length > 0 ? parts.join(' • ') : null;
-  }, [filters]);
+  const hasActiveFilters = useMemo(
+    () => (Object.keys(DEFAULT_FILTERS) as (keyof FilterState)[]).some((key) => filters[key] !== DEFAULT_FILTERS[key]),
+    [filters]
+  );
 
-  // Reset index when filter changes
+  // A batch selection only makes sense for the list it was made in
   useEffect(() => {
-    setCurrentIndex(0);
     setBatchSelectedIds([]);
   }, [filters]);
 
   // Current active cards in stack (up to 3 for visual depth)
-  const visibleCards = useMemo(() => {
-    return filteredPhotos.slice(currentIndex, currentIndex + 3);
-  }, [filteredPhotos, currentIndex]);
+  const visibleCards = useMemo(() => filteredPhotos.slice(0, 3), [filteredPhotos]);
 
-  // Prefetch authenticated image blobs for visible cards
-  useEffect(() => {
-    if (cachedToken && visibleCards.length > 0) {
-      visibleCards.forEach((c) => {
-        if (c.source === 'google-drive') {
-          getAuthenticatedBlobUrl(c.id, cachedToken);
-        }
-      });
-    }
-  }, [visibleCards, cachedToken]);
-
-  const hasMorePhotos = currentIndex < filteredPhotos.length;
-  const pendingCount = Math.max(0, filteredPhotos.length - currentIndex);
+  const hasMorePhotos = filteredPhotos.length > 0;
+  const pendingCount = filteredPhotos.length;
 
   // Swipe Action Handler
   const handleSwipe = useCallback(
     (direction: SwipeDirection) => {
-      if (!hasMorePhotos) return;
-
-      const currentPhoto = filteredPhotos[currentIndex];
+      const currentPhoto = filteredPhotos[0];
       if (!currentPhoto) return;
 
       setSwipeHistory((prev) => [...prev, { photo: currentPhoto, direction }]);
 
       if (direction === 'left') {
         // Queue for trash
-        setTrashQueue((prev) => [...prev, currentPhoto]);
+        setTrashQueue((prev) => (prev.some((p) => p.id === currentPhoto.id) ? prev : [...prev, currentPhoto]));
         setStats((prev) => ({
           ...prev,
           totalReviewed: prev.totalReviewed + 1,
           deletedCount: prev.deletedCount + 1,
         }));
-      } else if (direction === 'right') {
+      } else {
+        updateReviewedIds((ids) => ids.add(currentPhoto.id));
+      }
+
+      if (direction === 'right') {
         // Keep
         setStats((prev) => ({
           ...prev,
@@ -286,18 +274,20 @@ export default function App() {
           favoritedCount: prev.favoritedCount + 1,
         }));
       }
-
-      setCurrentIndex((prev) => prev + 1);
     },
-    [filteredPhotos, currentIndex, hasMorePhotos]
+    [filteredPhotos, updateReviewedIds]
   );
 
-  // Undo Last Action
+  // Undo Last Action: the photo goes back into the list
   const handleUndo = useCallback(() => {
-    if (swipeHistory.length === 0 || currentIndex === 0) return;
+    if (swipeHistory.length === 0) return;
 
     const lastAction = swipeHistory[swipeHistory.length - 1];
     setSwipeHistory((prev) => prev.slice(0, -1));
+
+    if (lastAction.direction !== 'left') {
+      updateReviewedIds((ids) => ids.delete(lastAction.photo.id));
+    }
 
     if (lastAction.direction === 'left') {
       setTrashQueue((prev) => prev.filter((p) => p.id !== lastAction.photo.id));
@@ -320,13 +310,12 @@ export default function App() {
       }));
     }
 
-    setCurrentIndex((prev) => Math.max(0, prev - 1));
-    showToast(`"${lastAction.photo.name.slice(0, 16)}..." geri alındı`);
-  }, [swipeHistory, currentIndex, showToast]);
+    showToast('Son hareket geri alındı');
+  }, [swipeHistory, showToast, updateReviewedIds]);
 
   // Keyboard navigation for Swipe mode
   useEffect(() => {
-    if (viewMode !== 'swipe') return;
+    if (activeTab !== 'swipe' || !hasGallery) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isTrashModalOpen || previewPhoto || isFilterDrawerOpen) return;
       if (e.key === 'ArrowLeft') {
@@ -335,170 +324,94 @@ export default function App() {
         handleSwipe('right');
       } else if (e.key === 'ArrowUp') {
         handleSwipe('up');
-      } else if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey || true)) {
+      } else if (e.key === 'z' || e.key === 'Z') {
         handleUndo();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSwipe, handleUndo, isTrashModalOpen, previewPhoto, isFilterDrawerOpen, viewMode]);
+  }, [handleSwipe, handleUndo, isTrashModalOpen, previewPhoto, isFilterDrawerOpen, activeTab, hasGallery]);
 
-  // Batch Multi-Select Handlers (Toplu Seç ve Sil)
+  // Batch Multi-Select Handlers
   const handleToggleBatchSelect = (id: string) => {
-    setBatchSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  };
-
-  const handleSelectAllBatch = () => {
-    setBatchSelectedIds(filteredPhotos.map((p) => p.id));
-  };
-
-  const handleDeselectAllBatch = () => {
-    setBatchSelectedIds([]);
-  };
-
-  const handleSelectPeopleOnly = () => {
-    const peopleIds = filteredPhotos.filter((p) => p.hasPerson).map((p) => p.id);
-    setBatchSelectedIds(peopleIds);
-    showToast(`${peopleIds.length} insan fotoğrafı seçildi.`);
-  };
-
-  const handleSelectNonPeopleOnly = () => {
-    const nonPeopleIds = filteredPhotos.filter((p) => !p.hasPerson).map((p) => p.id);
-    setBatchSelectedIds(nonPeopleIds);
-    showToast(`${nonPeopleIds.length} insan içermeyen fotoğraf seçildi.`);
+    setBatchSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
   };
 
   const handleQueueBatchForTrash = () => {
     if (batchSelectedIds.length === 0) return;
-    const selectedPhotos = filteredPhotos.filter((p) => batchSelectedIds.includes(p.id));
+    const selectedSet = new Set(batchSelectedIds);
+    const selectedPhotos = filteredPhotos.filter((p) => selectedSet.has(p.id));
     setTrashQueue((prev) => {
       const existingIds = new Set(prev.map((p) => p.id));
-      const newlyAdded = selectedPhotos.filter((p) => !existingIds.has(p.id));
-      return [...prev, ...newlyAdded];
+      return [...prev, ...selectedPhotos.filter((p) => !existingIds.has(p.id))];
     });
     setBatchSelectedIds([]);
     setIsTrashModalOpen(true);
   };
 
-  // Trash Confirmation Execution (Destructive operation per Workspace rules)
+  // Trash Confirmation Execution (the only place photos are actually deleted)
   const handleConfirmTrash = async (selectedIds: string[], permanent: boolean) => {
     setIsProcessingTrash(true);
-    const token = cachedToken || (await getAccessToken());
-
-    let successfullyDeletedBytes = 0;
-    const deletedIdSet = new Set<string>();
-    const statsCount = { trashed: 0, permanent: 0, failed: 0 };
-    const failedItems: { name: string; error?: string }[] = [];
+    const selectedSet = new Set(selectedIds);
+    const selected = trashQueue.filter((p) => selectedSet.has(p.id));
+    const devicePhotos = selected.filter(isDevicePhoto);
+    // Picked in the browser: they can only be dropped from the list
+    const removedIds = new Set(selected.filter((p) => !isDevicePhoto(p)).map((p) => p.id));
+    let deletedBytes = 0;
+    let notice: string | null = null;
 
     try {
-      for (const photoId of selectedIds) {
-        const photo = trashQueue.find((p) => p.id === photoId);
-        if (!photo) continue;
-
-        if (photo.source === 'google-drive' && token) {
-          const res = await safeDeleteOrTrashPhoto(token, photo.id, permanent);
-          if (res.success) {
-            if (res.action === 'permanently_deleted') {
-              statsCount.permanent += 1;
-            } else {
-              statsCount.trashed += 1;
-            }
-            successfullyDeletedBytes += photo.sizeBytes;
-            deletedIdSet.add(photo.id);
-          } else {
-            statsCount.failed += 1;
-            failedItems.push({ name: photo.name, error: res.error });
-          }
+      // One system confirmation dialog covers the whole batch
+      if (devicePhotos.length > 0) {
+        const confirmed = await deleteDevicePhotos(devicePhotos, permanent);
+        if (confirmed) {
+          devicePhotos.forEach((photo) => {
+            removedIds.add(photo.id);
+            deletedBytes += photo.sizeBytes;
+          });
+          notice = permanent
+            ? `${devicePhotos.length} fotoğraf kalıcı olarak silindi (${formatBytes(deletedBytes)}).`
+            : `${devicePhotos.length} fotoğraf çöp kutusuna taşındı (${formatBytes(deletedBytes)}).`;
         } else {
-          // Demo or local items
-          successfullyDeletedBytes += photo.sizeBytes;
-          deletedIdSet.add(photo.id);
-          statsCount.trashed += 1;
+          notice = 'Silme iptal edildi, fotoğrafların yerinde duruyor.';
         }
+      } else if (removedIds.size > 0) {
+        notice = `${removedIds.size} fotoğraf listeden kaldırıldı. Dosyalar cihazında duruyor.`;
       }
 
-      // Update state for successfully handled items
-      if (deletedIdSet.size > 0) {
-        setAllPhotos((prev) => prev.filter((p) => !deletedIdSet.has(p.id)));
-        setTrashQueue((prev) => prev.filter((p) => !deletedIdSet.has(p.id)));
-        setStats((prev) => ({
-          ...prev,
-          freedBytes: prev.freedBytes + successfullyDeletedBytes,
-        }));
+      if (removedIds.size > 0) {
+        // Photos the user unticked in the review are a decision to keep them
+        const sparedIds = trashQueue.filter((p) => !selectedSet.has(p.id)).map((p) => p.id);
+        if (sparedIds.length > 0) {
+          updateReviewedIds((ids) => sparedIds.forEach((id) => ids.add(id)));
+        }
+        setAllPhotos((prev) => prev.filter((p) => !removedIds.has(p.id)));
+        setTrashQueue([]);
+        setSwipeHistory([]);
+        setStats((prev) => ({ ...prev, freedBytes: prev.freedBytes + deletedBytes }));
+        setIsTrashModalOpen(false);
       }
 
-      setIsTrashModalOpen(false);
-
-      if (deletedIdSet.size > 0) {
-        // Celebration confetti
+      if (deletedBytes > 0) {
         try {
           confetti({
             particleCount: 120,
             spread: 90,
             origin: { y: 0.5 },
+            colors: ['#FFC629', '#1D1D1B', '#FFFFFF'],
           });
         } catch {
           // ignore
         }
-
-        const actionText =
-          statsCount.permanent > 0 && statsCount.trashed === 0
-            ? 'kalıcı silindi'
-            : 'çöp kutusuna taşındı';
-
-        if (failedItems.length === 0) {
-          showToast(
-            `Tebrikler! ${deletedIdSet.size} fotoğraf ${actionText} (${formatBytes(
-              successfullyDeletedBytes
-            )} alan açıldı).`
-          );
-        } else {
-          showToast(
-            `${deletedIdSet.size} fotoğraf çöp kutusuna taşındı (${formatBytes(
-              successfullyDeletedBytes
-            )} alan açıldı). ${failedItems.length} adet korumalı fotoğraf Google izin kısıtlamasına takıldı.`
-          );
-        }
-      } else if (failedItems.length > 0) {
-        showToast(
-          `İzin uyarısı: Bu fotoğraflar Google Fotoğraflar yedeklemesi olduğu için doğrudan Google Fotoğraflar uygulamasından silinmelidir.`
-        );
       }
     } catch (err: any) {
-      console.error('Silme işleminde beklenmedik hata:', err);
-      showToast(`Hata: ${err.message || 'Silme işlemi tamamlanamadı'}`);
+      console.error('Silme işleminde hata:', err);
+      notice = `Silinemedi: ${err?.message || 'Bilinmeyen hata'}`;
     } finally {
       setIsProcessingTrash(false);
+      if (notice) showToast(notice);
     }
-  };
-
-  // Add Local Photos from Camera Roll
-  const handleLocalPhotosAdded = (files: FileList) => {
-    const newItems: PhotoItem[] = Array.from(files).map((file, idx) => ({
-      id: `local-${Date.now()}-${idx}`,
-      source: 'local',
-      name: file.name,
-      url: URL.createObjectURL(file),
-      thumbnailUrl: URL.createObjectURL(file),
-      sizeBytes: file.size,
-      mimeType: file.type || 'image/jpeg',
-      createdAt: new Date().toISOString(),
-      year: new Date().getFullYear(),
-      month: new Date().getMonth() + 1,
-      monthLabel: new Date().toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' }),
-      albumName: 'Cihaz Galerisi',
-      hasPerson: false,
-      category: 'other',
-      description: 'Cihaz Galerisinden',
-      status: 'pending',
-    }));
-
-    setAllPhotos((prev) => [...newItems, ...prev]);
-    setCurrentIndex(0);
-    showToast(`${newItems.length} yerel fotoğraf eklendi!`);
   };
 
   const trashedQueueBytes = useMemo(() => {
@@ -506,154 +419,137 @@ export default function App() {
   }, [trashQueue]);
 
   return (
-    <AndroidFrame
-      isSimulatedFrame={isSimulatedFrame}
-      onToggleFrame={() => setIsSimulatedFrame(!isSimulatedFrame)}
-    >
+    <AndroidFrame isSimulatedFrame={isSimulatedFrame} onToggleFrame={() => setIsSimulatedFrame(!isSimulatedFrame)}>
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="absolute top-10 inset-x-4 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
-          <div className="mx-auto max-w-sm px-4 py-2.5 rounded-2xl bg-neutral-800/95 border border-neutral-700/80 shadow-2xl flex items-center gap-2.5 text-xs text-neutral-100 backdrop-blur-md">
-            <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-            <span className="flex-1 font-medium leading-tight">{toastMessage}</span>
+        <div className="absolute top-3 inset-x-4 z-[60] pointer-events-none">
+          <div className="mx-auto max-w-sm px-4 py-3 rounded-2xl bg-ink shadow-xl text-xs font-semibold text-white text-center leading-snug">
+            {toastMessage}
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <Header
-        user={user}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
-        isLoggingIn={isLoggingIn}
-        onReload={() => loadUserPhotos()}
-        isReloading={isLoadingPhotos}
-        isDemoMode={isDemoMode}
-        onSwitchToDemo={() => {
-          setAllPhotos(getDemoPhotos());
-          setIsDemoMode(true);
-          setCurrentIndex(0);
-          showToast('Örnek galeri yüklendi.');
-        }}
-        pendingCount={viewMode === 'swipe' ? pendingCount : filteredPhotos.length}
-        onOpenAppInfo={() => setIsAppInfoOpen(true)}
-      />
+      {!hasGallery ? (
+        isStarting ? (
+          <div className="flex-1 flex items-center justify-center bg-white">
+            <span className="w-8 h-8 border-[3px] border-brand border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : (
+          /* Welcome: nothing is loaded until the user grants access to the gallery */
+          <WelcomeView
+            onUseDeviceGallery={loadDeviceGallery}
+            onLocalFilesPicked={handleLocalFilesPicked}
+            useFilePicker={useFilePicker}
+            isLoading={isLoadingPhotos}
+          />
+        )
+      ) : (
+        <>
+          <TopBar
+            pendingCount={pendingCount}
+            onOpenFilters={() => setIsFilterDrawerOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+          />
 
-      {/* Filter Bar with Date / Album / Person / Mode */}
-      <FilterBar
-        filters={filters}
-        onFilterChange={setFilters}
-        onOpenFilterDrawer={() => setIsFilterDrawerOpen(true)}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        onLocalPhotosAdded={handleLocalPhotosAdded}
-        isDemo={isDemoMode}
-        onSwitchToDemo={() => {
-          setAllPhotos(getDemoPhotos());
-          setIsDemoMode(true);
-          setCurrentIndex(0);
-        }}
-        activeFilterSummary={activeFilterSummary}
-      />
-
-      {/* Storage Cleaned Stats Bar */}
-      <StorageStatsCard
-        stats={stats}
-        trashedQueueCount={trashQueue.length}
-        trashedQueueBytes={trashedQueueBytes}
-        onOpenTrashQueue={() => setIsTrashModalOpen(true)}
-      />
-
-      {/* Main Content: Swipe Mode VS Batch Multi-Select Grid Mode */}
-      {viewMode === 'swipe' ? (
-        <main className="flex-1 min-h-[350px] relative w-full flex flex-col items-center justify-center overflow-hidden px-2 py-1">
-          {hasMorePhotos ? (
-            <div className="relative w-full h-full min-h-[330px] max-h-[580px] flex items-center justify-center">
-              {/* Render cards in reverse so top card renders on top */}
-              {visibleCards
-                .map((photo, idx) => (
-                  <SwipeCard
-                    key={photo.id}
-                    photo={photo}
-                    isFront={idx === 0}
-                    depthIndex={idx}
-                    accessToken={cachedToken}
-                    onSwipe={handleSwipe}
-                    onOpenPreview={setPreviewPhoto}
+          {activeTab === 'swipe' && (
+            <>
+              <main className="flex-1 min-h-0 relative w-full flex flex-col items-center justify-center overflow-hidden">
+                {hasMorePhotos ? (
+                  /* Render cards in reverse so top card renders on top */
+                  visibleCards
+                    .map((photo, idx) => (
+                      <SwipeCard
+                        key={photo.id}
+                        photo={photo}
+                        isFront={idx === 0}
+                        depthIndex={idx}
+                        onSwipe={handleSwipe}
+                        onOpenPreview={setPreviewPhoto}
+                      />
+                    ))
+                    .reverse()
+                ) : (
+                  <BatchCompleteView
+                    stats={stats}
+                    trashedCount={trashQueue.length}
+                    trashedBytes={trashedQueueBytes}
+                    onOpenTrashModal={() => setIsTrashModalOpen(true)}
+                    onReset={handleResetReviewed}
+                    onOpenFilters={() => setIsFilterDrawerOpen(true)}
                   />
-                ))
-                .reverse()}
-            </div>
-          ) : (
-            <BatchCompleteView
-              stats={stats}
-              trashedCount={trashQueue.length}
-              trashedBytes={trashedQueueBytes}
-              onOpenTrashModal={() => setIsTrashModalOpen(true)}
-              onReset={() => {
-                setCurrentIndex(0);
-                setSwipeHistory([]);
-              }}
-              onFetchMore={() => loadUserPhotos()}
+                )}
+              </main>
+
+              {(hasMorePhotos || swipeHistory.length > 0) && (
+                <ActionControls
+                  canUndo={swipeHistory.length > 0}
+                  onUndo={handleUndo}
+                  onSwipeAction={handleSwipe}
+                />
+              )}
+            </>
+          )}
+
+          {activeTab === 'gallery' && (
+            <BatchGalleryView
+              photos={filteredPhotos}
+              selectedIds={batchSelectedIds}
+              onToggleSelect={handleToggleBatchSelect}
+              onSelectAll={() => setBatchSelectedIds(filteredPhotos.map((p) => p.id))}
+              onDeselectAll={() => setBatchSelectedIds([])}
+              onOpenPreview={setPreviewPhoto}
+              onQueueSelectedForTrash={handleQueueBatchForTrash}
             />
           )}
-        </main>
-      ) : (
-        /* Toplu Seç ve Sil (Batch Gallery Multi-Select Mode) */
-        <main className="flex-1 min-h-0 relative w-full overflow-hidden flex flex-col">
-          <BatchGalleryView
-            photos={filteredPhotos}
-            selectedIds={batchSelectedIds}
-            onToggleSelect={handleToggleBatchSelect}
-            onSelectAll={handleSelectAllBatch}
-            onDeselectAll={handleDeselectAllBatch}
-            onSelectPeopleOnly={handleSelectPeopleOnly}
-            onSelectNonPeopleOnly={handleSelectNonPeopleOnly}
-            onOpenPreview={setPreviewPhoto}
-            onQueueSelectedForTrash={handleQueueBatchForTrash}
+
+          {activeTab === 'profile' && (
+            <ProfileView
+              stats={stats}
+              totalPhotos={allPhotos.length}
+              trashedCount={trashQueue.length}
+              trashedBytes={trashedQueueBytes}
+              onOpenTrash={() => setIsTrashModalOpen(true)}
+              onReloadGallery={loadDeviceGallery}
+              onLocalFilesPicked={handleLocalFilesPicked}
+              useFilePicker={useFilePicker}
+              isLoading={isLoadingPhotos}
+              hiddenReviewedCount={allPhotos.filter((p) => reviewedIds.has(p.id)).length}
+              onResetReviewed={handleResetReviewed}
+            />
+          )}
+
+          <BottomNav
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            trashedCount={trashQueue.length}
+            onOpenTrash={() => setIsTrashModalOpen(true)}
           />
-        </main>
+
+          {/* Modal: Full Resolution Preview */}
+          <PhotoPreviewModal photo={previewPhoto} onClose={() => setPreviewPhoto(null)} />
+
+          {/* Drawer: Sort order, type, timeline (Year / Month) & album filter */}
+          <FilterDrawer
+            isOpen={isFilterDrawerOpen}
+            onClose={() => setIsFilterDrawerOpen(false)}
+            filters={filters}
+            onFilterChange={setFilters}
+            availableYears={availableYears}
+            availableAlbums={availableAlbums}
+            totalMatchingCount={filteredPhotos.length}
+          />
+
+          {/* Modal: Destructive Trash & Delete Review */}
+          <ReviewTrashModal
+            trashQueue={trashQueue}
+            isOpen={isTrashModalOpen}
+            onClose={() => setIsTrashModalOpen(false)}
+            onConfirmTrash={handleConfirmTrash}
+            isProcessing={isProcessingTrash}
+            canDeleteFiles={!useFilePicker}
+          />
+        </>
       )}
-
-      {/* Bottom Floating Control Buttons (Only in Swipe mode) */}
-      {viewMode === 'swipe' && (
-        <ActionControls
-          canUndo={swipeHistory.length > 0 && currentIndex > 0}
-          onUndo={handleUndo}
-          onSwipeAction={handleSwipe}
-          trashedCount={trashQueue.length}
-          onOpenTrashModal={() => setIsTrashModalOpen(true)}
-        />
-      )}
-
-      {/* Modal: Full Resolution Preview */}
-      <PhotoPreviewModal photo={previewPhoto} onClose={() => setPreviewPhoto(null)} />
-
-      {/* Drawer: Detailed Timeline (Year / Month) & Album & Person Filter */}
-      <FilterDrawer
-        isOpen={isFilterDrawerOpen}
-        onClose={() => setIsFilterDrawerOpen(false)}
-        filters={filters}
-        onFilterChange={setFilters}
-        availableYears={availableYears}
-        availableAlbums={availableAlbums}
-        totalMatchingCount={filteredPhotos.length}
-      />
-
-      {/* Modal: Destructive Trash & Delete Review */}
-      <ReviewTrashModal
-        trashQueue={trashQueue}
-        isOpen={isTrashModalOpen}
-        onClose={() => setIsTrashModalOpen(false)}
-        onRestorePhoto={(id) => {
-          setTrashQueue((prev) => prev.filter((p) => p.id !== id));
-        }}
-        onConfirmTrash={handleConfirmTrash}
-        isProcessing={isProcessingTrash}
-      />
-
-      {/* Modal: App & Icon Design Info */}
-      <AppInfoModal isOpen={isAppInfoOpen} onClose={() => setIsAppInfoOpen(false)} />
     </AndroidFrame>
   );
 }

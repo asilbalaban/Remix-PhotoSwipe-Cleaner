@@ -1,1 +1,30 @@
 @import "tailwindcss";
+
+@theme {
+  --color-brand: #ffc629;
+  --color-brand-deep: #f0b400;
+  --color-brand-soft: #fff6d6;
+  --color-ink: #1d1d1b;
+  --font-sans: ui-rounded, "Segoe UI", system-ui, -apple-system, "Roboto", sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: #ffffff;
+  color: var(--color-ink);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

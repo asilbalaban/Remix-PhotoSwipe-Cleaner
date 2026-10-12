@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Signing key, passwords and other files that must be backed up but never published
+private/

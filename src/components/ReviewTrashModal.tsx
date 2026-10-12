@@ -1,24 +1,25 @@
 import React, { useState } from 'react';
 import { PhotoItem } from '../types';
-import { formatBytes, formatDate } from '../services/googlePhotosService';
-import { Trash2, AlertTriangle, X, Check, ExternalLink, HardDrive, ShieldAlert, Sparkles } from 'lucide-react';
+import { formatBytes } from '../services/photoUtils';
+import { Trash2, AlertTriangle, X, Check } from 'lucide-react';
 
 interface ReviewTrashModalProps {
   trashQueue: PhotoItem[];
   isOpen: boolean;
   onClose: () => void;
-  onRestorePhoto: (photoId: string) => void;
   onConfirmTrash: (selectedIds: string[], permanent: boolean) => Promise<void>;
   isProcessing: boolean;
+  /** False in the browser, where the files behind the photos cannot be deleted */
+  canDeleteFiles: boolean;
 }
 
 export const ReviewTrashModal: React.FC<ReviewTrashModalProps> = ({
   trashQueue,
   isOpen,
   onClose,
-  onRestorePhoto,
   onConfirmTrash,
   isProcessing,
+  canDeleteFiles,
 }) => {
   const [selectedIds, setSelectedIds] = useState<string[]>(() => trashQueue.map((p) => p.id));
   const [permanentDelete, setPermanentDelete] = useState<boolean>(false);
@@ -32,17 +33,7 @@ export const ReviewTrashModal: React.FC<ReviewTrashModalProps> = ({
   if (!isOpen) return null;
 
   const toggleSelect = (id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  };
-
-  const selectAll = () => {
-    setSelectedIds(trashQueue.map((p) => p.id));
-  };
-
-  const deselectAll = () => {
-    setSelectedIds([]);
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
   };
 
   const totalSelectedBytes = trashQueue
@@ -55,109 +46,97 @@ export const ReviewTrashModal: React.FC<ReviewTrashModalProps> = ({
     setShowConfirmStep(false);
   };
 
+  const confirmText = !canDeleteFiles
+    ? 'listeden kaldırılacak. Tarayıcı sürümü cihazındaki dosyaları silemez.'
+    : permanentDelete
+    ? 'telefonundan kalıcı olarak silinecek. Bu işlem geri alınamaz.'
+    : 'telefonun çöp kutusuna taşınacak ve 30 gün sonra kendiliğinden silinecek.';
+
   return (
-    <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex flex-col justify-end sm:justify-center p-0 sm:p-4 animate-in fade-in duration-200">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-t-3xl sm:rounded-3xl max-h-[92%] sm:max-h-[85%] flex flex-col overflow-hidden shadow-2xl">
+    <div className="absolute inset-0 z-50 bg-black/50 flex flex-col justify-end" onClick={isProcessing ? undefined : onClose}>
+      <div
+        className="bg-white rounded-t-[28px] max-h-[92%] flex flex-col overflow-hidden shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
-        <div className="p-4 border-b border-neutral-800 flex items-center justify-between bg-neutral-900/80">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
-              <Trash2 className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="font-bold text-base text-neutral-100">Silinecekler Kuyruğu</h2>
-              <p className="text-xs text-neutral-400">
-                {trashQueue.length} fotoğraf seçildi • {formatBytes(totalSelectedBytes)} yer açılacak
-              </p>
-            </div>
+        <div className="px-5 pt-5 pb-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-black tracking-tight text-ink">Silinecekler</h2>
+            <p className="text-xs text-neutral-500">
+              {selectedIds.length} / {trashQueue.length} seçili · {formatBytes(totalSelectedBytes)}
+            </p>
           </div>
           <button
             onClick={onClose}
             disabled={isProcessing}
-            className="p-2 rounded-full hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+            className="w-9 h-9 rounded-full bg-neutral-100 text-ink flex items-center justify-center cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Content */}
         {trashQueue.length === 0 ? (
-          <div className="p-10 flex flex-col items-center justify-center text-center">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3">
-              <Sparkles className="w-8 h-8" />
+          <div className="px-8 py-12 flex flex-col items-center justify-center text-center">
+            <div className="w-16 h-16 rounded-full bg-brand-soft flex items-center justify-center mb-3">
+              <Trash2 className="w-7 h-7 text-brand-deep" />
             </div>
-            <h3 className="font-semibold text-neutral-200 text-lg">Silinecek Fotoğraf Yok</h3>
-            <p className="text-sm text-neutral-400 mt-1 max-w-xs">
-              Sola kaydırdığınız fotoğraflar burada toplanır. Henüz hiçbir fotoğraf silinmek üzere işaretlenmedi.
+            <h3 className="text-base font-extrabold text-ink">Silinecek fotoğraf yok</h3>
+            <p className="text-sm text-neutral-500 mt-1 max-w-xs">
+              Sola kaydırdığın fotoğraflar burada toplanır.
             </p>
             <button
               onClick={onClose}
-              className="mt-5 px-5 py-2 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-sm font-medium transition-colors cursor-pointer"
+              className="mt-5 px-6 py-3 rounded-full bg-brand text-ink text-sm font-extrabold cursor-pointer"
             >
-              Fotoğrafları İncelemeye Dön
+              Kaydırmaya Dön
             </button>
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {/* Action Bar inside modal */}
-            <div className="flex items-center justify-between text-xs text-neutral-400 pb-1">
-              <span>{selectedIds.length} / {trashQueue.length} seçili</span>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={selectAll}
-                  className="text-emerald-400 hover:underline cursor-pointer"
-                >
-                  Tümünü Seç
-                </button>
-                <button
-                  onClick={deselectAll}
-                  className="text-neutral-400 hover:underline cursor-pointer"
-                >
-                  Seçimi Kaldır
-                </button>
-              </div>
+          <div className="flex-1 overflow-y-auto px-5 pb-4 space-y-4">
+            <div className="flex items-center justify-end gap-4 text-xs font-bold">
+              <button
+                onClick={() => setSelectedIds(trashQueue.map((p) => p.id))}
+                className="text-ink underline decoration-brand decoration-2 underline-offset-2 cursor-pointer"
+              >
+                Tümünü Seç
+              </button>
+              <button onClick={() => setSelectedIds([])} className="text-neutral-500 cursor-pointer">
+                Seçimi Kaldır
+              </button>
             </div>
 
-            {/* Photo Grid */}
-            <div className="grid grid-cols-3 gap-2.5">
+            {/* Photo Grid: unchecked photos are kept */}
+            <div className="grid grid-cols-3 gap-1.5">
               {trashQueue.map((photo) => {
                 const isChecked = selectedIds.includes(photo.id);
                 return (
                   <div
                     key={photo.id}
                     onClick={() => toggleSelect(photo.id)}
-                    className={`group relative aspect-square rounded-2xl overflow-hidden cursor-pointer border-2 transition-all ${
-                      isChecked
-                        ? 'border-rose-500 shadow-lg shadow-rose-950/40 ring-2 ring-rose-500/30'
-                        : 'border-neutral-800 opacity-50 grayscale hover:opacity-80'
+                    className={`relative aspect-square rounded-2xl overflow-hidden cursor-pointer bg-neutral-100 transition-all ${
+                      isChecked ? 'ring-4 ring-brand ring-inset' : 'opacity-45 grayscale'
                     }`}
                   >
-                    <div className="w-full h-full bg-neutral-800 flex items-center justify-center text-neutral-500">
-                      <span className="text-xs font-mono font-bold">IMG</span>
-                    </div>
                     <img
                       src={photo.thumbnailUrl || photo.url}
                       alt={photo.name}
+                      loading="lazy"
                       onError={(e) => {
                         (e.target as HTMLImageElement).style.opacity = '0';
                       }}
-                      className="absolute inset-0 w-full h-full object-cover transition-opacity"
+                      className="absolute inset-0 w-full h-full object-cover"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30 pointer-events-none" />
 
-                    {/* Checkbox indicator */}
                     <div
-                      className={`absolute top-1.5 right-1.5 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
-                        isChecked
-                          ? 'bg-rose-500 text-white shadow-md'
-                          : 'bg-black/60 border border-white/40 text-transparent'
+                      className={`absolute top-1.5 right-1.5 w-6 h-6 rounded-full flex items-center justify-center transition-all ${
+                        isChecked ? 'bg-brand text-ink shadow-md' : 'bg-white/70 border border-white text-transparent'
                       }`}
                     >
-                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      <Check className="w-3.5 h-3.5 stroke-[3.5]" />
                     </div>
 
-                    {/* Photo Size */}
-                    <div className="absolute bottom-1.5 left-1.5 right-1.5 text-[10px] text-white font-medium truncate">
+                    <div className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-full bg-black/55 text-[10px] text-white font-bold">
                       {formatBytes(photo.sizeBytes)}
                     </div>
                   </div>
@@ -166,80 +145,74 @@ export const ReviewTrashModal: React.FC<ReviewTrashModalProps> = ({
             </div>
 
             {/* Permanent vs Trash toggle */}
-            <div className="p-3.5 rounded-2xl bg-neutral-800/70 border border-neutral-700/60 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <ShieldAlert className="w-5 h-5 text-amber-400 flex-shrink-0" />
+            {canDeleteFiles && (
+              <div className="p-4 rounded-2xl bg-neutral-100 flex items-center justify-between gap-3">
                 <div className="text-left">
-                  <div className="text-xs font-semibold text-neutral-200">
-                    {permanentDelete ? 'Kalıcı Olarak Sil' : 'Çöp Kutusuna Taşı (Önerilen)'}
-                  </div>
-                  <div className="text-[11px] text-neutral-400">
+                  <div className="text-sm font-extrabold text-ink">Kalıcı olarak sil</div>
+                  <div className="text-xs text-neutral-500">
                     {permanentDelete
-                      ? 'Geri getirilemez (korumalı fotoğraflarda çöp kutusu kullanılır)'
-                      : 'Güvenle çöp kutusuna taşınır, depolama alanı açılır'}
+                      ? 'Açık: fotoğraflar geri getirilemez'
+                      : 'Kapalı: fotoğraflar çöp kutusuna taşınır (önerilen)'}
                   </div>
                 </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPermanentDelete(!permanentDelete)}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  permanentDelete ? 'bg-rose-600' : 'bg-neutral-600'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                    permanentDelete ? 'translate-x-5' : 'translate-x-0'
+                <button
+                  type="button"
+                  onClick={() => setPermanentDelete(!permanentDelete)}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
+                    permanentDelete ? 'bg-ink' : 'bg-neutral-300'
                   }`}
-                />
-              </button>
-            </div>
+                >
+                  <span
+                    className={`pointer-events-none absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform duration-200 ${
+                      permanentDelete ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Footer with Mandatory Explicit Confirmation */}
+        {/* Footer with explicit confirmation */}
         {trashQueue.length > 0 && (
-          <div className="p-4 border-t border-neutral-800 bg-neutral-900 flex flex-col gap-2">
+          <div className="px-5 py-4 border-t border-neutral-100">
             {!showConfirmStep ? (
               <button
                 onClick={() => setShowConfirmStep(true)}
                 disabled={selectedIds.length === 0 || isProcessing}
-                className="w-full py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-rose-900/40 transition-all cursor-pointer"
+                className="w-full py-3.5 rounded-full bg-brand hover:bg-brand-deep disabled:opacity-50 text-ink font-extrabold text-sm flex items-center justify-center gap-2 active:scale-[0.99] transition-all cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
-                <span>{selectedIds.length} Fotoğrafı Temizle ({formatBytes(totalSelectedBytes)})</span>
+                <span>
+                  {selectedIds.length} Fotoğrafı Temizle ({formatBytes(totalSelectedBytes)})
+                </span>
               </button>
             ) : (
-              <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/40 space-y-3">
-                <div className="flex items-start gap-2.5">
-                  <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-rose-200 leading-relaxed">
-                    <strong>Dikkat:</strong> Seçili {selectedIds.length} adet fotoğraf{' '}
-                    {permanentDelete ? 'kalıcı olarak silinecektir.' : 'Google hesabınızın çöp kutusuna taşınacaktır.'}{' '}
-                    Devam etmek istiyor musunuz?
+              <div className="space-y-3">
+                <div className="p-3.5 rounded-2xl bg-brand-soft flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-ink shrink-0 mt-0.5" />
+                  <p className="text-xs text-ink leading-relaxed">
+                    Seçili <strong>{selectedIds.length} fotoğraf</strong> {confirmText} Devam edilsin mi?
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5">
                   <button
                     onClick={() => setShowConfirmStep(false)}
                     disabled={isProcessing}
-                    className="flex-1 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-medium text-xs transition-colors cursor-pointer"
+                    className="flex-1 py-3 rounded-full bg-white border border-neutral-200 text-ink font-extrabold text-sm cursor-pointer"
                   >
                     Vazgeç
                   </button>
                   <button
                     onClick={handleExecute}
                     disabled={isProcessing}
-                    className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition-colors cursor-pointer"
+                    className="flex-1 py-3 rounded-full bg-ink text-white font-extrabold text-sm flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     {isProcessing ? (
                       <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     ) : (
-                      <>
-                        <Check className="w-4 h-4" />
-                        <span>Evet, Sil</span>
-                      </>
+                      <span>{canDeleteFiles ? 'Evet, Sil' : 'Listeden Kaldır'}</span>
                     )}
                   </button>
                 </div>

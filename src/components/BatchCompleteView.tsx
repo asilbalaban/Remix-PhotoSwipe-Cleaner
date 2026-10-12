@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { CleanerStats } from '../types';
-import { formatBytes } from '../services/googlePhotosService';
-import { CheckCircle2, Trash2, RotateCcw, Heart, Star, Sparkles, HardDrive } from 'lucide-react';
+import { formatBytes } from '../services/photoUtils';
+import { Check, RotateCcw, SlidersHorizontal } from 'lucide-react';
 
 interface BatchCompleteViewProps {
   stats: CleanerStats;
@@ -10,7 +10,7 @@ interface BatchCompleteViewProps {
   trashedBytes: number;
   onOpenTrashModal: () => void;
   onReset: () => void;
-  onFetchMore: () => void;
+  onOpenFilters: () => void;
 }
 
 export const BatchCompleteView: React.FC<BatchCompleteViewProps> = ({
@@ -19,7 +19,7 @@ export const BatchCompleteView: React.FC<BatchCompleteViewProps> = ({
   trashedBytes,
   onOpenTrashModal,
   onReset,
-  onFetchMore,
+  onOpenFilters,
 }) => {
   useEffect(() => {
     try {
@@ -27,6 +27,7 @@ export const BatchCompleteView: React.FC<BatchCompleteViewProps> = ({
         particleCount: 80,
         spread: 70,
         origin: { y: 0.6 },
+        colors: ['#FFC629', '#1D1D1B', '#FFFFFF'],
       });
     } catch {
       // ignore
@@ -34,70 +35,41 @@ export const BatchCompleteView: React.FC<BatchCompleteViewProps> = ({
   }, []);
 
   return (
-    <div className="flex-1 p-6 flex flex-col items-center justify-center text-center animate-in zoom-in-95 duration-300">
-      <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-400 p-1 flex items-center justify-center shadow-xl shadow-emerald-950/50 mb-4 animate-bounce">
-        <div className="w-full h-full bg-neutral-900 rounded-full flex items-center justify-center text-emerald-400">
-          <CheckCircle2 className="w-10 h-10" />
-        </div>
+    <div className="flex-1 w-full px-7 flex flex-col items-center justify-center text-center">
+      <div className="w-24 h-24 rounded-full bg-brand flex items-center justify-center shadow-lg shadow-brand/50">
+        <Check className="w-12 h-12 text-ink stroke-[3]" />
       </div>
 
-      <h2 className="text-xl font-black text-white tracking-tight">Harika İş!</h2>
-      <p className="text-xs text-neutral-400 mt-1 max-w-xs">
-        Mevcut albümdeki tüm fotoğrafları incelediniz. Depolama alanınızı temizlemek için son adım!
+      <h2 className="mt-5 text-2xl font-black text-ink tracking-tight">Hepsine baktın!</h2>
+      <p className="text-sm text-neutral-500 mt-1.5 max-w-[17rem]">
+        Bu listede incelenecek fotoğraf kalmadı. Şimdiye kadar {stats.totalReviewed} fotoğrafa baktın.
+        {trashedCount > 0 && ' Son adım: silinecekleri onayla.'}
       </p>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-3 gap-2 w-full my-5">
-        <div className="p-3 rounded-2xl bg-neutral-800/80 border border-neutral-700/60">
-          <Heart className="w-5 h-5 text-emerald-400 mx-auto mb-1 fill-emerald-500/20" />
-          <div className="text-base font-bold text-white">{stats.keptCount}</div>
-          <div className="text-[10px] text-neutral-400">Saklanan</div>
-        </div>
-
-        <div className="p-3 rounded-2xl bg-rose-950/40 border border-rose-500/40">
-          <Trash2 className="w-5 h-5 text-rose-400 mx-auto mb-1" />
-          <div className="text-base font-bold text-rose-400">{trashedCount}</div>
-          <div className="text-[10px] text-rose-300">Silinecek</div>
-        </div>
-
-        <div className="p-3 rounded-2xl bg-neutral-800/80 border border-neutral-700/60">
-          <Star className="w-5 h-5 text-amber-400 mx-auto mb-1 fill-amber-500/20" />
-          <div className="text-base font-bold text-white">{stats.favoritedCount}</div>
-          <div className="text-[10px] text-neutral-400">Favori</div>
-        </div>
-      </div>
-
-      {trashedCount > 0 && (
-        <div className="w-full mb-4 p-3 rounded-2xl bg-rose-900/30 border border-rose-500/30 flex items-center justify-between">
-          <div className="text-left">
-            <div className="text-xs font-bold text-rose-300">{trashedCount} Fotoğraf Hazır</div>
-            <div className="text-[11px] text-neutral-400">{formatBytes(trashedBytes)} yer açılacak</div>
-          </div>
+      <div className="w-full max-w-xs mt-7 space-y-2.5">
+        {trashedCount > 0 && (
           <button
             onClick={onOpenTrashModal}
-            className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md shadow-rose-950/50 transition-all cursor-pointer"
+            className="w-full py-3.5 rounded-full bg-brand hover:bg-brand-deep text-ink font-extrabold text-sm active:scale-[0.98] transition-all cursor-pointer"
           >
-            Hemen Temizle
+            {trashedCount} Fotoğrafı Temizle ({formatBytes(trashedBytes)})
           </button>
-        </div>
-      )}
+        )}
 
-      {/* Actions */}
-      <div className="w-full space-y-2">
         <button
-          onClick={onFetchMore}
-          className="w-full py-3 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-950/50 transition-all cursor-pointer"
+          onClick={onOpenFilters}
+          className="w-full py-3.5 rounded-full bg-white border border-neutral-200 text-ink font-extrabold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-all cursor-pointer"
         >
-          <HardDrive className="w-4 h-4" />
-          <span>Daha Fazla Fotoğraf Yükle</span>
+          <SlidersHorizontal className="w-4 h-4" />
+          <span>Filtreyi Değiştir</span>
         </button>
 
         <button
           onClick={onReset}
-          className="w-full py-2.5 rounded-2xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-medium text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          className="w-full py-2.5 text-neutral-500 hover:text-ink font-bold text-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
         >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>Bu Albümü Yeniden İncele</span>
+          <RotateCcw className="w-4 h-4" />
+          <span>Saklananları Yeniden Göster</span>
         </button>
       </div>
     </div>
